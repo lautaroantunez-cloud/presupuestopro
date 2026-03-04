@@ -1901,10 +1901,9 @@ const MP_LINKS = {
   monthly:  'TU_LINK_MENSUAL',
   lifetime: 'TU_LINK_UNICO',
 };
-const ACTIVATION_CODES = {
-  monthly:  'MESPRO',
-  lifetime: 'VITALPRO',
-};
+// ACTIVATION_CODES removed from frontend — codes now verified server-side via Firestore.
+// To issue a new code: add a document to the 'activationCodes' collection in Firebase Console.
+// Never put codes here again.
 
 const PLANS = [
   {
@@ -2002,11 +2001,8 @@ let curDoc   = null;
 let curDocTab = 'presupuesto';
 
 // Version salt
-var PRO_VERSION = 'v1';
-if (localStorage.getItem('pp4_pro_v') !== PRO_VERSION) {
-  localStorage.removeItem('pp4_pro');
-  localStorage.setItem('pp4_pro_v', PRO_VERSION);
-}
+// PRO_VERSION and localStorage-based pro checks removed.
+// Plan status is now authoritative from Firestore only.
 // Clear stale install flags in browser mode
 (function() {
   var isStandalone = window.navigator.standalone === true ||
@@ -2016,9 +2012,12 @@ if (localStorage.getItem('pp4_pro_v') !== PRO_VERSION) {
     localStorage.removeItem('pp4_install_nodshow');
   }
 })();
-let proStatus = localStorage.getItem('pp4_pro') || 'free';
+// proStatus is loaded from Firestore in loadFromCloud() — never from localStorage
+let proStatus = 'free';
 
 // Creation counter
+// docsCreatedLog: tracks docs created per month to enforce free limits.
+// Source of truth is Firestore (data.docsCreatedLog). localStorage is a fallback for offline.
 let docsCreatedLog = JSON.parse(localStorage.getItem('pp4_dlog') || '{}');
 
 function monthKey() {
@@ -2458,7 +2457,7 @@ function renderDocs() {
       <div class="doc-card-top">
         <div class="doc-ico ${isPres ? 'pres' : 'fact'}">${icon}</div>
         <div class="doc-inf">
-          <h3>${esc(d.clientName)||'Sin nombre'} <span style="font-size:.74rem;color:var(--ink3);font-weight:400">#${d.num}</span></h3>
+          <h3>${esc(d.clientName)||'Sin nombre'} <span style="font-size:.74rem;color:var(--ink3);font-weight:400">#${esc(d.num)}</span></h3>
           <p>${fmtDate(d.dateIssue)}${d.dateExpiry && isPres ? ' · Vence: '+fmtDate(d.dateExpiry):''}</p>
         </div>
         <div class="doc-tot">${sym} ${f(tot)}</div>
@@ -2495,7 +2494,7 @@ function showSignModal(id) {
   ov.innerHTML = `
     <div class="modal" style="max-width:400px">
       <h2 style="font-family:'Fraunces',serif;font-size:1.1rem;font-weight:800;margin-bottom:4px">Aprobar presupuesto</h2>
-      <p style="font-size:.8rem;color:var(--ink3);margin-bottom:14px">Cliente: <strong>${esc(d.clientName)||'Sin nombre'}</strong> · #${d.num}</p>
+      <p style="font-size:.8rem;color:var(--ink3);margin-bottom:14px">Cliente: <strong>${esc(d.clientName)||'Sin nombre'}</strong> · #${esc(d.num)}</p>
       <div style="font-size:.75rem;font-weight:700;color:var(--ink2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Firma del cliente (opcional)</div>
       <canvas id="signCanvas" width="340" height="120" style="width:100%;border:1.5px solid var(--line);border-radius:var(--r-sm);background:#fafcff;touch-action:none;cursor:crosshair"></canvas>
       <div style="display:flex;gap:8px;margin-top:6px;margin-bottom:16px">
@@ -2879,8 +2878,7 @@ function loadCfgFields() {
   // Apply saved MP links/codes at load time (runtime only — not exposed in UI)
   if (cfg.mpMonthly)    MP_LINKS.monthly          = cfg.mpMonthly;
   if (cfg.mpLifetime)   MP_LINKS.lifetime          = cfg.mpLifetime;
-  if (cfg.codeMonthly)  ACTIVATION_CODES.monthly   = cfg.codeMonthly;
-  if (cfg.codeLifetime) ACTIVATION_CODES.lifetime  = cfg.codeLifetime;
+  // Activation codes are managed in Firestore, not in cfg.
 }
 function saveCfg() {
   cfg = {
@@ -2890,8 +2888,7 @@ function saveCfg() {
     // MP links & codes are hardcoded by the developer — not editable by users
     mpMonthly:    cfg.mpMonthly    || '',
     mpLifetime:   cfg.mpLifetime   || '',
-    codeMonthly:  cfg.codeMonthly  || 'MESPRO',
-    codeLifetime: cfg.codeLifetime || 'VITALPRO',
+    // Activation codes managed in Firestore — removed from client config.
   };
   localStorage.setItem('pp4_cfg', JSON.stringify(cfg));
   toast('✓ Configuración guardada', 'ok');
@@ -2976,7 +2973,7 @@ function renderRecent() {
     <div class="doc-card clickable" onclick="prevDoc(${d.id})">
       <div class="doc-ico ${d.type === 'presupuesto' ? 'pres' : 'fact'}">${d.type === 'presupuesto' ? '📄' : '🧾'}</div>
       <div class="doc-inf">
-        <h3>${esc(d.clientName)||'Sin nombre'} <span style="font-size:.74rem;color:var(--ink3);font-weight:400">#${d.num}</span></h3>
+        <h3>${esc(d.clientName)||'Sin nombre'} <span style="font-size:.74rem;color:var(--ink3);font-weight:400">#${esc(d.num)}</span></h3>
         <p>${fmtDate(d.dateIssue)}</p>
         <div style="margin-top:4px">${chipSt(d)}</div>
       </div>
@@ -3564,28 +3561,69 @@ function purchasePlan(planId) {
   }
 }
 
-function activateCode() {
-  const code = (gv('activationInput') || '').trim().toUpperCase();
+async function activateCode() {
+  const code = (gv('activationInput') || '').trim();
   const msgEl = el('activationMsg');
   if (!code) {
     msgEl.innerHTML = '<span style="color:var(--red)">Ingresá el código de activación.</span>';
     return;
   }
-  if (code === ACTIVATION_CODES.lifetime.toUpperCase()) {
-    proStatus = 'lifetime';
-    localStorage.setItem('pp4_pro', 'lifetime');
-    localStorage.setItem('pp4_pro_v', PRO_VERSION);
+  if (!fbUID) {
+    msgEl.innerHTML = '<span style="color:var(--red)">Esperá a que la app termine de cargar.</span>';
+    return;
+  }
+
+  msgEl.innerHTML = '<span style="color:var(--ink3)">Verificando código…</span>';
+
+  try {
+    // Read the activation code document from Firestore
+    const codeSnap = await db.collection('activationCodes').doc(code).get();
+
+    if (!codeSnap.exists) {
+      msgEl.innerHTML = '<span style="color:var(--red)">❌ Código incorrecto. Revisá que esté bien escrito o contactanos por WhatsApp.</span>';
+      el('activationInput').focus();
+      return;
+    }
+
+    const codeData = codeSnap.data();
+
+    if (!codeData.active) {
+      msgEl.innerHTML = '<span style="color:var(--red)">❌ Este código ya no está activo.</span>';
+      return;
+    }
+
+    if (codeData.usedBy && codeData.usedBy !== fbUID) {
+      msgEl.innerHTML = '<span style="color:var(--red)">❌ Este código ya fue utilizado por otra cuenta.</span>';
+      return;
+    }
+
+    const plan = codeData.plan; // 'monthly' or 'lifetime'
+
+    // Mark the code as used and write pro status to the user document atomically
+    const batch = db.batch();
+
+    batch.update(db.collection('activationCodes').doc(code), {
+      usedBy: fbUID,
+      usedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
+    batch.set(db.collection('users').doc(fbUID), {
+      proStatus: plan,
+      proActivatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      proCode: code,
+    }, { merge: true });
+
+    await batch.commit();
+
+    // Update local state from server source of truth
+    proStatus = plan;
+    // Do NOT persist proStatus to localStorage — always read from Firestore
     closeUpgrade(); renderFreemiumBanner(); updateStats();
-    toast('💎 ¡Pro Vitalicio activado! Gracias por tu apoyo.', 'ok');
-  } else if (code === ACTIVATION_CODES.monthly.toUpperCase()) {
-    proStatus = 'monthly';
-    localStorage.setItem('pp4_pro', 'monthly');
-    localStorage.setItem('pp4_pro_v', PRO_VERSION);
-    closeUpgrade(); renderFreemiumBanner(); updateStats();
-    toast('⭐ ¡Pro Mensual activado! Gracias por tu apoyo.', 'ok');
-  } else {
-    msgEl.innerHTML = '<span style="color:var(--red)">❌ Código incorrecto. Revisá que esté bien escrito o contactanos por WhatsApp.</span>';
-    el('activationInput').focus();
+    toast(plan === 'lifetime' ? '💎 ¡Pro Vitalicio activado! Gracias por tu apoyo.' : '⭐ ¡Pro Mensual activado! Gracias por tu apoyo.', 'ok');
+
+  } catch (err) {
+    console.error('[Activate]', err);
+    msgEl.innerHTML = '<span style="color:var(--red)">Error de conexión. Intentá de nuevo.</span>';
   }
 }
 
@@ -3894,6 +3932,21 @@ function showDeviceLink() {
 }
 
 function applyDeviceLink() {
+  // SECURITY: Device linking now requires a dedicated transfer token, not the raw UID.
+  // The old flow allowed anyone with another user's UID to steal their data.
+  // New flow: user generates a short-lived transfer token in the source device,
+  // and only that token (stored in a separate 'deviceTransfers' collection with
+  // strict Firestore rules) can be used to pull data.
+  //
+  // TODO (Next.js migration): implement proper device transfer via Cloud Function
+  // that validates token ownership and expiry server-side.
+  //
+  // For now, we disable the direct UID-based linking entirely.
+  toast('La vinculación por código está temporalmente deshabilitada por seguridad. Iniciá sesión con el mismo email en el nuevo dispositivo.', 'err');
+  var mod = document.getElementById('deviceLinkMod');
+  if (mod) mod.remove();
+}
+function _applyDeviceLink_DISABLED() {
   var code = (document.getElementById('linkCodeInput').value || '').trim();
   if (!code || code.length < 20) { toast('Código inválido', 'err'); return; }
   showCloudIndicator('☁️ Cargando datos del otro dispositivo...');
@@ -3908,7 +3961,6 @@ function applyDeviceLink() {
       if (data.biz)      { biz = data.biz;           localStorage.setItem('pp4_biz',      JSON.stringify(biz)); }
       if (data.cfg)      { cfg = data.cfg;           localStorage.setItem('pp4_cfg',      JSON.stringify(cfg)); }
       if (data.logoURL)  { logoURL = data.logoURL;   localStorage.setItem('pp4_logo',     logoURL); }
-      // Now also save under current UID so this device syncs going forward
       syncToCloud();
       loadBizFields(); loadCfgFields(); updateSidebar(); updateStats();
       updateDashWelcome(); renderRecent(); renderReminders();
@@ -4318,13 +4370,14 @@ function syncToCloud() {
   if (!fbUID || !fbReady) return;
   showCloudIndicator('☁️ Guardando en la nube...');
   var payload = {
-    docs:      docs,
-    clients:   clients,
-    products:  products,
-    biz:       biz,
-    cfg:       cfg,
-    logoURL:   logoURL || null,
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    docs:           docs,
+    clients:        clients,
+    products:       products,
+    biz:            biz,
+    cfg:            cfg,
+    logoURL:        logoURL || null,
+    docsCreatedLog: docsCreatedLog,
+    updatedAt:      firebase.firestore.FieldValue.serverTimestamp(),
   };
   db.collection('users').doc(fbUID).set(payload, { merge: true })
     .then(function() {
@@ -4356,19 +4409,33 @@ function loadFromCloud(uid) {
     .then(function(snap) {
       if (snap.exists) {
         var data = snap.data();
-        // Only overwrite local if cloud data is newer or local is empty
-        if (data.docs     && data.docs.length     >= docs.length)     { docs     = data.docs;     localStorage.setItem('pp4_docs',     JSON.stringify(docs)); }
-        if (data.clients  && data.clients.length  >= clients.length)  { clients  = data.clients;  localStorage.setItem('pp4_clients',  JSON.stringify(clients)); }
-        if (data.products && data.products.length >= products.length) { products = data.products; localStorage.setItem('pp4_products', JSON.stringify(products)); }
-        if (data.biz      && Object.keys(data.biz).length > 0)        { biz      = data.biz;      localStorage.setItem('pp4_biz',      JSON.stringify(biz)); }
-        if (data.cfg      && Object.keys(data.cfg).length > 0)        { cfg      = data.cfg;      localStorage.setItem('pp4_cfg',      JSON.stringify(cfg)); }
-        if (data.logoURL) { logoURL = data.logoURL; localStorage.setItem('pp4_logo', logoURL); }
+
+        // ── PRO STATUS: always trust Firestore, never localStorage ──
+        proStatus = data.proStatus || 'free';
+
+        // ── DATA MERGE: use server timestamp to decide winner ──
+        // This fixes the "deleted docs come back on another device" bug.
+        var cloudTs = data.updatedAt ? data.updatedAt.toMillis() : 0;
+        var localTs = parseInt(localStorage.getItem('pp4_updatedAt') || '0');
+
+        if (cloudTs >= localTs) {
+          if (data.docs)     { docs     = data.docs;     localStorage.setItem('pp4_docs',     JSON.stringify(docs)); }
+          if (data.clients)  { clients  = data.clients;  localStorage.setItem('pp4_clients',  JSON.stringify(clients)); }
+          if (data.products) { products = data.products; localStorage.setItem('pp4_products', JSON.stringify(products)); }
+          if (data.biz && Object.keys(data.biz).length > 0) { biz = data.biz; localStorage.setItem('pp4_biz', JSON.stringify(biz)); }
+          if (data.cfg && Object.keys(data.cfg).length > 0) { cfg = data.cfg; localStorage.setItem('pp4_cfg', JSON.stringify(cfg)); }
+          if (data.logoURL) { logoURL = data.logoURL; localStorage.setItem('pp4_logo', logoURL); }
+          if (data.docsCreatedLog) { docsCreatedLog = data.docsCreatedLog; localStorage.setItem('pp4_dlog', JSON.stringify(docsCreatedLog)); }
+          localStorage.setItem('pp4_updatedAt', cloudTs.toString());
+        }
+
         // Refresh all UI
         loadBizFields(); loadCfgFields(); updateSidebar(); updateStats();
         updateDashWelcome(); renderRecent(); renderReminders();
         renderDocs(); renderClients(); renderProducts();
         if (logoURL) applyLogo(logoURL);
         updateBadges();
+        renderFreemiumBanner();
       } else {
         // First time — push local data to cloud
         syncToCloud();
@@ -4399,6 +4466,19 @@ function initFirebase() {
   });
 }
 function ls(k) { return localStorage.getItem(k); }
+// ─── XSS SANITIZATION ────────────────────────────────────────────────────────
+// Use esc() on ALL user-provided strings before inserting into innerHTML.
+function esc(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+
 function docBtnCobrado(d) { return d.status === 'cobrado' ? 'btn-ok' : 'btn-sec'; }
 function docBtnAcc(d)     { return d.status === 'accepted' ? 'btn-ok' : 'btn-sec'; }
 function chipSt(d) {
